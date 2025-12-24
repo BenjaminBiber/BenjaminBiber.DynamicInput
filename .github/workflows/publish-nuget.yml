@@ -1,0 +1,64 @@
+name: Publish NuGet Package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: 'SemVer version to publish (e.g. 1.2.3).'
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_PATH: BenjaminBiber.DynamicInput/BenjaminBiber.DynamicInput.csproj
+      ARTIFACT_DIR: artifacts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Determine package version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.package_version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "Package version could not be determined." >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Pack
+        run: dotnet pack $PROJECT_PATH --configuration Release --no-build --output $ARTIFACT_DIR /p:PackageVersion=${{ steps.version.outputs.version }}
+
+      - name: Publish to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "The secret NUGET_API_KEY is not configured." >&2
+            exit 1
+          fi
+          dotnet nuget push $ARTIFACT_DIR/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate

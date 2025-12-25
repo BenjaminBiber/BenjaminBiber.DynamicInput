@@ -9,5 +9,4 @@
   <ItemGroup>
     <ProjectReference Include="..\\BenjaminBiber.DynamicInput\\BenjaminBiber.DynamicInput.csproj" />
   </ItemGroup>
-
 </Project>

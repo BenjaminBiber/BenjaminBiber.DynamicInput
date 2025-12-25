@@ -1,7 +1,82 @@
 ﻿@page "/"
+@rendermode InteractiveServer
+@using BenjaminBiber.DynamicInput
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Dynamic Input Demo</PageTitle>
 
-<h1>Hello, world!</h1>
+<MudStack Spacing="3">
+    <MudPaper Class="pa-4">
+        <MudText Typo="Typo.h4" Class="mb-2">DynamicObjectEditor</MudText>
+        <MudText>
+            Die Komponente erzeugt MudBlazor-Inputs aus beliebigen Objektinstanzen. Über den Parameter
+            <code>RequireSubmit</code> lässt sich steuern, ob Änderungen sofort ins Modell geschrieben oder erst nach
+            einem Klick auf den Submit-Button angewendet werden. Über das Attribute <code>[DynamicInputIgnore]</code>
+            blendest du Eigenschaften vollständig aus und mit <code>[DynamicInputClass]</code> fügst du den einzelnen
+            Inputs zusätzliche CSS-Klassen hinzu.
+        </MudText>
+    </MudPaper>
 
-Welcome to your new app.
+    <MudGrid Spacing="3">
+        <MudItem xs="12" md="6">
+            <MudPaper Class="pa-4 h-100">
+                <MudText Typo="Typo.subtitle1" Class="mb-2">Direktes Bearbeiten</MudText>
+                <DynamicObjectEditor Model="_immediatePerson"
+                                      ModelChanged="OnModelChangedAsync" />
+                <MudText Typo="Typo.subtitle2" Class="mt-4">Live-Daten</MudText>
+                <pre class="mud-code-block">@_immediateJson</pre>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="6">
+            <MudPaper Class="pa-4 h-100">
+                <MudText Typo="Typo.subtitle1" Class="mb-2">Nur per Submit</MudText>
+                <DynamicObjectEditor Model="_deferredPerson"
+                                      ModelChanged="OnModelChangedAsync"
+                                      RequireSubmit="true"
+                                      SubmitButtonText="Änderungen anwenden" />
+                <MudText Typo="Typo.subtitle2" Class="mt-4">Live-Daten</MudText>
+                <pre class="mud-code-block">@_deferredJson</pre>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+</MudStack>
+
+@code {
+    private readonly SamplePerson _immediatePerson = new()
+    {
+        FirstName = "Benjamin",
+        LastName = "Biber",
+        Age = 32,
+        Salary = 4200.50m,
+        OpenTasks = 3,
+        Birthday = new DateTime(1992, 11, 5),
+        IsActive = true,
+        Status = "active"
+    };
+
+    private readonly SamplePerson _deferredPerson = new()
+    {
+        FirstName = "Anna",
+        LastName = "Amsel",
+        Age = 28,
+        Salary = 5100,
+        OpenTasks = 2,
+        Birthday = new DateTime(1996, 4, 17),
+        IsActive = false,
+        Status = "paused"
+    };
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true
+    };
+
+    private string _immediateJson => JsonSerializer.Serialize(_immediatePerson, JsonOptions);
+    private string _deferredJson => JsonSerializer.Serialize(_deferredPerson, JsonOptions);
+
+    private Task OnModelChangedAsync(object? _)
+    {
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+}

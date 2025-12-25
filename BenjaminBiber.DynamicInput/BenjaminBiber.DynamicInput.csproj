@@ -4,11 +4,23 @@
         <TargetFramework>net9.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
+        <PackageId>BenjaminBiber.DynamicInput</PackageId>
+        <Authors>Benjamin Biber</Authors>
+        <Company>Benjamin Biber</Company>
+        <Product>BenjaminBiber.DynamicInput</Product>
+        <Description>Reflektiert Modelle und rendert MudBlazor-Inputs automatisch.</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageTags>Blazor;MudBlazor;Forms;Dynamic;Reflection</PackageTags>
     </PropertyGroup>
 
 
     <ItemGroup>
         <SupportedPlatform Include="browser" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="..\README.md" Pack="true" PackagePath="/" />
     </ItemGroup>
 
     <ItemGroup>

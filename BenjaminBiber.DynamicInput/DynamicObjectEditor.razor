@@ -1,0 +1,643 @@
+@using System.Collections.Generic
+@using System.ComponentModel
+@using System.ComponentModel.DataAnnotations
+@using System.Globalization
+@using System.Linq
+@using System.Reflection
+@using System.Threading.Tasks
+@using Microsoft.AspNetCore.Components.Rendering
+@using MudBlazor
+
+<div class="@GetContainerClass()">
+    @if (Model is null)
+    {
+        <MudAlert Severity="Severity.Warning">Es wurde kein Modell übergeben.</MudAlert>
+    }
+    else if (_editableProperties.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">Das übergebene Objekt besitzt keine öffentlichen, editierbaren Eigenschaften.</MudAlert>
+    }
+    else
+    {
+        @foreach (var property in _editableProperties)
+        {
+            <div class="mb-4">
+                @RenderInput(property)
+            </div>
+        }
+
+        @if (_deferApply)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="!_isDirty" OnClick="SubmitChanges">
+                @SubmitButtonText
+            </MudButton>
+        }
+    }
+</div>
+
+@code {
+    [Parameter]
+    public object? Model { get; set; }
+
+    [Parameter]
+    public EventCallback<object?> ModelChanged { get; set; }
+
+    [Parameter]
+    public bool RequireSubmit { get; set; }
+
+    [Parameter]
+    public string SubmitButtonText { get; set; } = "Änderungen übernehmen";
+
+    [Parameter] public string? WrapperClass { get; set; }
+    [Parameter] public string? InputClass { get; set; }
+
+    private readonly Dictionary<string, object?> _pendingValues = new(StringComparer.Ordinal);
+    private readonly List<PropertyInfo> _editableProperties = new();
+    private readonly Dictionary<string, IReadOnlyList<DynamicInputOption>> _optionsCache = new(StringComparer.Ordinal);
+
+    private object? _currentModelRef;
+    private bool _deferApply;
+    private bool _initialized;
+    private bool _isDirty;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
+
+        var shouldSyncMode = !_initialized || _deferApply != RequireSubmit;
+        if (shouldSyncMode)
+        {
+            await SetDeferModeAsync(RequireSubmit, applyPendingWhenDisabling: _initialized);
+            _initialized = true;
+        }
+
+        var modelChanged = !ReferenceEquals(_currentModelRef, Model);
+
+        if (modelChanged)
+        {
+            _currentModelRef = Model;
+            BuildPropertyCache();
+            _isDirty = false;
+            if (_deferApply)
+            {
+                SnapshotPendingValues(force: true);
+            }
+            else
+            {
+                _pendingValues.Clear();
+            }
+        }
+        else if (_deferApply)
+        {
+            SnapshotPendingValues(force: false);
+        }
+
+        await LoadSelectableOptionsAsync(modelChanged);
+    }
+
+    private RenderFragment RenderInput(PropertyInfo property) => builder =>
+    {
+        if (property.GetCustomAttribute<DynamicInputOptionsAttribute>() is not null)
+        {
+            RenderSelectField(builder, property);
+            return;
+        }
+
+        var propertyType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+        if (propertyType == typeof(string) || propertyType == typeof(Guid))
+        {
+            RenderTextField(builder, property);
+        }
+        else if (propertyType == typeof(bool))
+        {
+            RenderBooleanField(builder, property);
+        }
+        else if (IsNumericType(property.PropertyType))
+        {
+            RenderNumericField(builder, property);
+        }
+        else if (propertyType == typeof(DateTime))
+        {
+            RenderDatePicker(builder, property);
+        }
+        else
+        {
+            RenderUnsupportedField(builder, property);
+        }
+    };
+
+    private void BuildPropertyCache()
+    {
+        _editableProperties.Clear();
+        if (Model is null)
+        {
+            return;
+        }
+
+        _editableProperties.AddRange(
+            Model.GetType()
+                .GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                .Where(p => p.GetIndexParameters().Length == 0)
+                .Where(p => p.CanRead && p.CanWrite && p.SetMethod?.IsPublic == true)
+                .Where(p => p.GetCustomAttribute<DynamicInputIgnoreAttribute>() is null)
+        );
+    }
+
+    private async Task LoadSelectableOptionsAsync(bool modelChanged)
+    {
+        if (Model is null)
+        {
+            _optionsCache.Clear();
+            return;
+        }
+
+        _optionsCache.Clear();
+
+        foreach (var property in _editableProperties)
+        {
+            var optionsAttribute = property.GetCustomAttribute<DynamicInputOptionsAttribute>();
+            if (optionsAttribute is null)
+            {
+                continue;
+            }
+
+            var options = await ResolveOptionsForPropertyAsync(property, optionsAttribute);
+            if (options.Count > 0)
+            {
+                _optionsCache[property.Name] = options;
+            }
+        }
+    }
+
+    private void SnapshotPendingValues(bool force)
+    {
+        if (!_deferApply || Model is null)
+        {
+            return;
+        }
+
+        if (force)
+        {
+            _pendingValues.Clear();
+        }
+
+        if (_pendingValues.Count > 0 && !force)
+        {
+            return;
+        }
+
+        foreach (var property in _editableProperties)
+        {
+            _pendingValues[property.Name] = property.GetValue(Model);
+        }
+    }
+
+    private object? ReadValue(PropertyInfo property)
+    {
+        if (_deferApply)
+        {
+            if (_pendingValues.TryGetValue(property.Name, out var pending))
+            {
+                return pending;
+            }
+        }
+
+        return Model is null ? null : property.GetValue(Model);
+    }
+
+    private async Task<IReadOnlyList<DynamicInputOption>> ResolveOptionsForPropertyAsync(PropertyInfo property, DynamicInputOptionsAttribute attribute)
+    {
+        if (Model is null)
+        {
+            return Array.Empty<DynamicInputOption>();
+        }
+
+        var declaringType = property.DeclaringType ?? Model.GetType();
+        var method = declaringType.GetMethod(attribute.ProviderMethodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (method is null)
+        {
+            throw new InvalidOperationException($"Die Methode '{attribute.ProviderMethodName}' wurde für {property.Name} nicht gefunden.");
+        }
+
+        if (method.GetParameters().Length > 0)
+        {
+            throw new InvalidOperationException($"Die Methode '{attribute.ProviderMethodName}' für {property.Name} darf keine Parameter besitzen.");
+        }
+
+        var result = method.Invoke(Model, null);
+        return await NormalizeOptionsResultAsync(result);
+    }
+
+    private async Task<IReadOnlyList<DynamicInputOption>> NormalizeOptionsResultAsync(object? result)
+    {
+        if (result is null)
+        {
+            return Array.Empty<DynamicInputOption>();
+        }
+
+        if (result is Task taskResult)
+        {
+            await taskResult.ConfigureAwait(false);
+            result = GetTaskResult(taskResult);
+        }
+
+        if (result is IReadOnlyList<DynamicInputOption> typedList)
+        {
+            return typedList;
+        }
+
+        if (result is IEnumerable<DynamicInputOption> enumerableOptions)
+        {
+            return enumerableOptions.ToList();
+        }
+
+        if (result is IDictionary<string, object?> dictionary)
+        {
+            return dictionary.Select(pair => new DynamicInputOption(pair.Key, pair.Value)).ToList();
+        }
+
+        if (result is IEnumerable<KeyValuePair<string, object?>> pairs)
+        {
+            return pairs.Select(pair => new DynamicInputOption(pair.Key, pair.Value)).ToList();
+        }
+
+        throw new InvalidOperationException("Der Rückgabewert der Options-Methode wird nicht unterstützt. Verwende IDictionary<string, object?>, IEnumerable<KeyValuePair<string, object?>>, IEnumerable<DynamicInputOption> oder Task<> dieser Typen.");
+    }
+
+    private static object? GetTaskResult(Task task)
+    {
+        var taskType = task.GetType();
+        return taskType.IsGenericType
+            ? taskType.GetProperty("Result")?.GetValue(task)
+            : null;
+    }
+
+    private void RenderSelectField(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        if (!_optionsCache.TryGetValue(property.Name, out var options) || options.Count == 0)
+        {
+            builder.OpenComponent(seq++, typeof(MudAlert));
+            builder.AddAttribute(seq++, nameof(MudAlert.Severity), Severity.Info);
+            builder.AddAttribute(seq++, nameof(MudAlert.ChildContent), (RenderFragment)(content =>
+            {
+                content.AddContent(0, $"Für {GetDisplayName(property)} stehen derzeit keine Optionen zur Verfügung.");
+            }));
+            builder.CloseComponent();
+            return;
+        }
+
+        var selectType = typeof(MudSelect<>).MakeGenericType(property.PropertyType);
+        builder.OpenComponent(seq++, selectType);
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.Label), GetDisplayName(property));
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.Value), ReadValue(property));
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.ValueChanged), EventCallback.Factory.Create(this, (Func<object?, Task>)(value => OnValueChangedAsync(property, value))));
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.Class), ResolveInputClass(property));
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.ChildContent), (RenderFragment)(childBuilder =>
+        {
+            var childSeq = 0;
+            foreach (var option in options)
+            {
+                var itemType = typeof(MudSelectItem<>).MakeGenericType(property.PropertyType);
+                childBuilder.OpenComponent(childSeq++, itemType);
+                childBuilder.AddAttribute(childSeq++, nameof(MudSelectItem<object>.Value), ConvertValueForProperty(property, option.Value));
+                childBuilder.AddAttribute(childSeq++, nameof(MudSelectItem<object>.ChildContent), (RenderFragment)(content =>
+                {
+                    content.AddContent(0, option.Label ?? option.Value?.ToString());
+                }));
+                childBuilder.CloseComponent();
+            }
+        }));
+        builder.CloseComponent();
+    }
+
+    private void RenderTextField(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        builder.OpenComponent(seq++, typeof(MudTextField<string>));
+        builder.AddAttribute(seq++, nameof(MudTextField<string>.Label), GetDisplayName(property));
+        builder.AddAttribute(seq++, nameof(MudTextField<string>.Value), Convert.ToString(ReadValue(property), CultureInfo.CurrentCulture));
+        builder.AddAttribute(seq++, nameof(MudTextField<string>.ValueChanged), EventCallback.Factory.Create<string?>(this, value => OnValueChangedAsync(property, value)));
+        builder.AddAttribute(seq++, nameof(MudTextField<string>.Immediate), true);
+        builder.AddAttribute(seq++, nameof(MudTextField<string>.Class), ResolveInputClass(property));
+        builder.CloseComponent();
+    }
+
+    private void RenderBooleanField(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        builder.OpenComponent(seq++, typeof(MudSwitch<bool>));
+        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Label), GetDisplayName(property));
+        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Value), Convert.ToBoolean(ReadValue(property) ?? false, CultureInfo.InvariantCulture));
+        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.ValueChanged), EventCallback.Factory.Create<bool>(this, value => OnValueChangedAsync(property, value)));
+        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Color), Color.Primary);
+        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Class), ResolveInputClass(property));
+        builder.CloseComponent();
+    }
+
+    private void RenderNumericField(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var propertyType = property.PropertyType;
+        if (propertyType == typeof(int))
+        {
+            RenderNumericField<int>(builder, property);
+        }
+        else if (propertyType == typeof(int?))
+        {
+            RenderNumericField<int?>(builder, property);
+        }
+        else if (propertyType == typeof(long))
+        {
+            RenderNumericField<long>(builder, property);
+        }
+        else if (propertyType == typeof(long?))
+        {
+            RenderNumericField<long?>(builder, property);
+        }
+        else if (propertyType == typeof(decimal))
+        {
+            RenderNumericField<decimal>(builder, property);
+        }
+        else if (propertyType == typeof(decimal?))
+        {
+            RenderNumericField<decimal?>(builder, property);
+        }
+        else if (propertyType == typeof(double))
+        {
+            RenderNumericField<double>(builder, property);
+        }
+        else if (propertyType == typeof(double?))
+        {
+            RenderNumericField<double?>(builder, property);
+        }
+        else if (propertyType == typeof(float))
+        {
+            RenderNumericField<float>(builder, property);
+        }
+        else if (propertyType == typeof(float?))
+        {
+            RenderNumericField<float?>(builder, property);
+        }
+        else if (propertyType == typeof(short))
+        {
+            RenderNumericField<short>(builder, property);
+        }
+        else if (propertyType == typeof(short?))
+        {
+            RenderNumericField<short?>(builder, property);
+        }
+        else if (propertyType == typeof(byte))
+        {
+            RenderNumericField<byte>(builder, property);
+        }
+        else if (propertyType == typeof(byte?))
+        {
+            RenderNumericField<byte?>(builder, property);
+        }
+        else if (propertyType == typeof(uint))
+        {
+            RenderNumericField<uint>(builder, property);
+        }
+        else if (propertyType == typeof(uint?))
+        {
+            RenderNumericField<uint?>(builder, property);
+        }
+        else if (propertyType == typeof(ulong))
+        {
+            RenderNumericField<ulong>(builder, property);
+        }
+        else if (propertyType == typeof(ulong?))
+        {
+            RenderNumericField<ulong?>(builder, property);
+        }
+        else if (propertyType == typeof(ushort))
+        {
+            RenderNumericField<ushort>(builder, property);
+        }
+        else if (propertyType == typeof(ushort?))
+        {
+            RenderNumericField<ushort?>(builder, property);
+        }
+        else
+        {
+            RenderUnsupportedField(builder, property);
+        }
+    }
+
+    private void RenderNumericField<TValue>(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        builder.OpenComponent(seq++, typeof(MudNumericField<TValue>));
+        builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Label), GetDisplayName(property));
+        builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Value), ConvertToFieldValue<TValue>(ReadValue(property)));
+        builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.ValueChanged), EventCallback.Factory.Create<TValue>(this, value => OnValueChangedAsync(property, value)));
+        builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Immediate), true);
+        builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Class), ResolveInputClass(property));
+        builder.CloseComponent();
+    }
+
+    private void RenderDatePicker(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        builder.OpenComponent(seq++, typeof(MudDatePicker));
+        builder.AddAttribute(seq++, nameof(MudDatePicker.Label), GetDisplayName(property));
+        builder.AddAttribute(seq++, nameof(MudDatePicker.Date), ReadValue(property) as DateTime?);
+        builder.AddAttribute(seq++, nameof(MudDatePicker.DateChanged), EventCallback.Factory.Create<DateTime?>(this, value => OnValueChangedAsync(property, value)));
+        builder.AddAttribute(seq++, nameof(MudDatePicker.Class), ResolveInputClass(property));
+        builder.CloseComponent();
+    }
+
+    private void RenderUnsupportedField(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        builder.OpenComponent(seq++, typeof(MudAlert));
+        builder.AddAttribute(seq++, nameof(MudAlert.Severity), Severity.Warning);
+        builder.AddAttribute(seq++, nameof(MudAlert.ChildContent), (RenderFragment)(contentBuilder =>
+        {
+            contentBuilder.AddContent(0, $"{GetDisplayName(property)} ({property.PropertyType.Name}) kann nicht automatisch gerendert werden.");
+        }));
+        builder.CloseComponent();
+    }
+
+    private async Task OnValueChangedAsync(PropertyInfo property, object? value)
+    {
+        var converted = ConvertValueForProperty(property, value);
+        if (_deferApply)
+        {
+            _pendingValues[property.Name] = converted;
+            _isDirty = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        if (Model is null)
+        {
+            return;
+        }
+
+        property.SetValue(Model, converted);
+        if (ModelChanged.HasDelegate)
+        {
+            await ModelChanged.InvokeAsync(Model);
+        }
+    }
+
+    private async Task SubmitChanges()
+    {
+        await SubmitChangesInternalAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SubmitChangesInternalAsync()
+    {
+        if (!_deferApply || Model is null)
+        {
+            return;
+        }
+
+        foreach (var property in _editableProperties)
+        {
+            if (_pendingValues.TryGetValue(property.Name, out var value))
+            {
+                var converted = ConvertValueForProperty(property, value);
+                property.SetValue(Model, converted);
+            }
+        }
+
+        _isDirty = false;
+        SnapshotPendingValues(force: true);
+
+        if (ModelChanged.HasDelegate)
+        {
+            await ModelChanged.InvokeAsync(Model);
+        }
+    }
+
+    private async Task SetDeferModeAsync(bool enable, bool applyPendingWhenDisabling)
+    {
+        if (_deferApply == enable)
+        {
+            return;
+        }
+
+        if (enable)
+        {
+            _deferApply = true;
+            SnapshotPendingValues(force: true);
+        }
+        else
+        {
+            if (applyPendingWhenDisabling && _isDirty)
+            {
+                await SubmitChangesInternalAsync();
+            }
+
+            _deferApply = false;
+            _pendingValues.Clear();
+            _isDirty = false;
+        }
+    }
+
+    private string GetContainerClass()
+    {
+        const string baseClasses = "dynamic-object-editor pa-4";
+        return string.IsNullOrWhiteSpace(WrapperClass)
+            ? baseClasses
+            : string.Join(' ', baseClasses, WrapperClass);
+    }
+
+    private string? ResolveInputClass(PropertyInfo property)
+    {
+        List<string>? classes = null;
+
+        void Append(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            classes ??= new List<string>();
+            classes.Add(value);
+        }
+
+        Append(InputClass);
+
+        foreach (var cssClass in property.GetCustomAttributes<DynamicInputClassAttribute>()
+                     .SelectMany(attr => attr.CssClasses))
+        {
+            Append(cssClass);
+        }
+
+        return classes is null ? null : string.Join(" ", classes);
+    }
+
+    private static bool IsNumericType(Type type)
+    {
+        var actual = Nullable.GetUnderlyingType(type) ?? type;
+        return actual == typeof(byte) || actual == typeof(sbyte) || actual == typeof(short) || actual == typeof(ushort)
+               || actual == typeof(int) || actual == typeof(uint) || actual == typeof(long) || actual == typeof(ulong)
+               || actual == typeof(float) || actual == typeof(double) || actual == typeof(decimal);
+    }
+
+    private TValue ConvertToFieldValue<TValue>(object? value)
+    {
+        var converted = ChangeType(value, typeof(TValue));
+        return converted is null ? default! : (TValue)converted;
+    }
+
+    private object? ConvertValueForProperty(PropertyInfo property, object? value)
+    {
+        return ChangeType(value, property.PropertyType);
+    }
+
+    private static object? ChangeType(object? value, Type targetType)
+    {
+        var actualType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+
+        if (value is null)
+        {
+            return targetType.IsValueType && Nullable.GetUnderlyingType(targetType) is null
+                ? Activator.CreateInstance(targetType)
+                : null;
+        }
+
+        if (actualType.IsInstanceOfType(value))
+        {
+            return value;
+        }
+
+        if (actualType.IsEnum)
+        {
+            return Enum.Parse(actualType, value.ToString() ?? string.Empty, ignoreCase: true);
+        }
+
+        if (actualType == typeof(Guid))
+        {
+            return value switch
+            {
+                Guid guid => guid,
+                _ => Guid.Parse(value.ToString() ?? string.Empty)
+            };
+        }
+
+        return Convert.ChangeType(value, actualType, CultureInfo.InvariantCulture);
+    }
+
+    private static string GetDisplayName(PropertyInfo property)
+    {
+        var display = property.GetCustomAttribute<DisplayAttribute>()?.GetName();
+        if (!string.IsNullOrWhiteSpace(display))
+        {
+            return display!;
+        }
+
+        var displayName = property.GetCustomAttribute<DisplayNameAttribute>()?.DisplayName;
+        if (!string.IsNullOrWhiteSpace(displayName))
+        {
+            return displayName!;
+        }
+
+        return property.Name;
+    }
+}

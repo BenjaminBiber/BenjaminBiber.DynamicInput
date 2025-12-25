@@ -9,6 +9,8 @@
         <Company>Benjamin Biber</Company>
         <Product>BenjaminBiber.DynamicInput</Product>
         <Description>Reflektiert Modelle und rendert MudBlazor-Inputs automatisch.</Description>
+        <RepositoryUrl>https://github.com/BenjaminBiber/DynamicInput</RepositoryUrl>
+        <PackageProjectUrl>https://github.com/BenjaminBiber/DynamicInput</PackageProjectUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageTags>Blazor;MudBlazor;Forms;Dynamic;Reflection</PackageTags>

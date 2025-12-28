@@ -19,16 +19,24 @@
     }
     else
     {
-        @foreach (var property in _editableProperties)
+        @foreach (var group in _propertyGroups)
         {
-            <div class="mb-4">
-                @RenderInput(property)
-            </div>
+            if (!string.IsNullOrWhiteSpace(group.Heading))
+            {
+                <MudText Typo="Typo.h6" Class="mt-6 mb-2">@group.Heading</MudText>
+            }
+
+            foreach (var property in group.Properties)
+            {
+                <div class="mb-4">
+                    @RenderInput(property)
+                </div>
+            }
         }
 
         @if (_deferApply)
         {
-            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="!_isDirty" OnClick="SubmitChanges">
+            <MudButton Class="@SubmitButtonClass" Variant="Variant.Filled" Color="Color.Primary" Disabled="!_isDirty" OnClick="SubmitChanges">
                 @SubmitButtonText
             </MudButton>
         }
@@ -50,9 +58,14 @@
 
     [Parameter] public string? WrapperClass { get; set; }
     [Parameter] public string? InputClass { get; set; }
+    [Parameter] public Color? InputColor { get; set; }
+    [Parameter] public Variant? InputVariant { get; set; }
+    [Parameter] public string? SubmitButtonClass { get; set; }
+    [Parameter] public DynamicInputBooleanDisplay BooleanDisplay { get; set; } = DynamicInputBooleanDisplay.Switch;
 
     private readonly Dictionary<string, object?> _pendingValues = new(StringComparer.Ordinal);
     private readonly List<PropertyInfo> _editableProperties = new();
+    private readonly List<PropertyRenderGroup> _propertyGroups = new();
     private readonly Dictionary<string, IReadOnlyList<DynamicInputOption>> _optionsCache = new(StringComparer.Ordinal);
     private static readonly MethodInfo _createValueChangedCallbackCoreMethod =
         typeof(DynamicObjectEditor).GetMethod(nameof(CreateValueChangedCallbackCore), BindingFlags.Instance | BindingFlags.NonPublic)
@@ -132,6 +145,7 @@
     private void BuildPropertyCache()
     {
         _editableProperties.Clear();
+        _propertyGroups.Clear();
         if (Model is null)
         {
             return;
@@ -144,6 +158,32 @@
                 .Where(p => p.CanRead && p.CanWrite && p.SetMethod?.IsPublic == true)
                 .Where(p => p.GetCustomAttribute<DynamicInputIgnoreAttribute>() is null)
         );
+
+        BuildPropertyGroups();
+    }
+
+    private void BuildPropertyGroups()
+    {
+        _propertyGroups.Clear();
+
+        PropertyRenderGroup? currentGroup = null;
+        string? currentHeading = null;
+
+        foreach (var property in _editableProperties)
+        {
+            var heading = GetGroupHeading(property);
+
+            if (currentGroup is not null && string.Equals(currentHeading, heading, StringComparison.Ordinal))
+            {
+                currentGroup.Properties.Add(property);
+                continue;
+            }
+
+            currentHeading = heading;
+            currentGroup = new PropertyRenderGroup(heading);
+            currentGroup.Properties.Add(property);
+            _propertyGroups.Add(currentGroup);
+        }
     }
 
     private async Task LoadSelectableOptionsAsync(bool modelChanged)
@@ -297,6 +337,7 @@
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Value), ReadValue(property));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.ValueChanged), valueChangedCallback);
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Class), ResolveInputClass(property));
+        AppendVariantAttribute(builder, ref seq, nameof(MudSelect<object>.Variant));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.ChildContent), (RenderFragment)(childBuilder =>
         {
             var childSeq = 0;
@@ -335,18 +376,73 @@
         builder.AddAttribute(seq++, nameof(MudTextField<string>.ValueChanged), EventCallback.Factory.Create<string?>(this, value => OnValueChangedAsync(property, value)));
         builder.AddAttribute(seq++, nameof(MudTextField<string>.Immediate), true);
         builder.AddAttribute(seq++, nameof(MudTextField<string>.Class), ResolveInputClass(property));
+        AppendVariantAttribute(builder, ref seq, nameof(MudTextField<string>.Variant));
         builder.CloseComponent();
     }
 
     private void RenderBooleanField(RenderTreeBuilder builder, PropertyInfo property)
     {
+        var display = ResolveBooleanDisplayMode(property);
+        if (display == DynamicInputBooleanDisplay.Checkbox)
+        {
+            RenderCheckboxField(builder, property);
+            return;
+        }
+
+        RenderSwitchField(builder, property);
+    }
+
+    private void RenderSwitchField(RenderTreeBuilder builder, PropertyInfo property)
+    {
         var seq = 0;
-        builder.OpenComponent(seq++, typeof(MudSwitch<bool>));
+        var isNullable = property.PropertyType == typeof(bool?);
+        var componentType = isNullable ? typeof(MudSwitch<bool?>) : typeof(MudSwitch<bool>);
+        builder.OpenComponent(seq++, componentType);
         builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Label), GetDisplayName(property));
-        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Value), Convert.ToBoolean(ReadValue(property) ?? false, CultureInfo.InvariantCulture));
-        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.ValueChanged), EventCallback.Factory.Create<bool>(this, value => OnValueChangedAsync(property, value)));
-        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Color), Color.Primary);
+        if (isNullable)
+        {
+            builder.AddAttribute(seq++, nameof(MudSwitch<bool?>.Value), ReadNullableBoolean(property));
+            builder.AddAttribute(seq++, nameof(MudSwitch<bool?>.ValueChanged), EventCallback.Factory.Create<bool?>(this, value => OnValueChangedAsync(property, value)));
+        }
+        else
+        {
+            builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Value), Convert.ToBoolean(ReadValue(property) ?? false, CultureInfo.InvariantCulture));
+            builder.AddAttribute(seq++, nameof(MudSwitch<bool>.ValueChanged), EventCallback.Factory.Create<bool>(this, value => OnValueChangedAsync(property, value)));
+        }
+
+        var colorAttributeName = isNullable
+            ? nameof(MudSwitch<bool?>.Color)
+            : nameof(MudSwitch<bool>.Color);
+        AppendColorAttribute(builder, ref seq, colorAttributeName, Color.Primary);
         builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Class), ResolveInputClass(property));
+        builder.CloseComponent();
+    }
+
+    private void RenderCheckboxField(RenderTreeBuilder builder, PropertyInfo property)
+    {
+        var seq = 0;
+        var isNullable = property.PropertyType == typeof(bool?);
+        var componentType = isNullable ? typeof(MudCheckBox<bool?>) : typeof(MudCheckBox<bool>);
+        builder.OpenComponent(seq++, componentType);
+        builder.AddAttribute(seq++, nameof(MudCheckBox<bool>.Label), GetDisplayName(property));
+        builder.AddAttribute(seq++, nameof(MudCheckBox<bool>.Class), ResolveInputClass(property));
+
+        if (isNullable)
+        {
+            builder.AddAttribute(seq++, nameof(MudCheckBox<bool?>.Value), ReadNullableBoolean(property));
+            builder.AddAttribute(seq++, nameof(MudCheckBox<bool?>.ValueChanged), EventCallback.Factory.Create<bool?>(this, value => OnValueChangedAsync(property, value)));
+        }
+        else
+        {
+            builder.AddAttribute(seq++, nameof(MudCheckBox<bool>.Value), Convert.ToBoolean(ReadValue(property) ?? false, CultureInfo.InvariantCulture));
+            builder.AddAttribute(seq++, nameof(MudCheckBox<bool>.ValueChanged), EventCallback.Factory.Create<bool>(this, value => OnValueChangedAsync(property, value)));
+        }
+
+        var checkboxColorAttribute = isNullable
+            ? nameof(MudCheckBox<bool?>.Color)
+            : nameof(MudCheckBox<bool>.Color);
+        AppendColorAttribute(builder, ref seq, checkboxColorAttribute);
+
         builder.CloseComponent();
     }
 
@@ -355,11 +451,11 @@
         var propertyType = property.PropertyType;
         if (propertyType == typeof(int))
         {
-            RenderNumericField<int>(builder, property);
+            RenderIntegerField(builder, property, isNullable: false);
         }
         else if (propertyType == typeof(int?))
         {
-            RenderNumericField<int?>(builder, property);
+            RenderIntegerField(builder, property, isNullable: true);
         }
         else if (propertyType == typeof(long))
         {
@@ -439,7 +535,68 @@
         }
     }
 
-    private void RenderNumericField<TValue>(RenderTreeBuilder builder, PropertyInfo property)
+    private void RenderIntegerField(RenderTreeBuilder builder, PropertyInfo property, bool isNullable)
+    {
+        var attribute = property.GetCustomAttribute<DynamicInputIntegerAttribute>();
+        if (attribute is null)
+        {
+            if (isNullable)
+            {
+                RenderNumericField<int?>(builder, property);
+            }
+            else
+            {
+                RenderNumericField<int>(builder, property);
+            }
+
+            return;
+        }
+
+        if (attribute.DisplayAsSlider && isNullable)
+        {
+            throw new InvalidOperationException($"{property.Name} darf kein nullable int sein, wenn es als Slider dargestellt werden soll.");
+        }
+
+        if (attribute.DisplayAsSlider)
+        {
+            RenderIntegerSlider(builder, property, attribute);
+            return;
+        }
+
+        if (isNullable)
+        {
+            RenderNumericField<int?>(builder, property, attribute.Minimum, attribute.Maximum);
+        }
+        else
+        {
+            RenderNumericField<int>(builder, property, attribute.Minimum, attribute.Maximum);
+        }
+    }
+
+    private void RenderIntegerSlider(RenderTreeBuilder builder, PropertyInfo property, DynamicInputIntegerAttribute attribute)
+    {
+        var label = GetDisplayName(property);
+        var seq = 0;
+        builder.OpenComponent(seq++, typeof(MudText));
+        builder.AddAttribute(seq++, nameof(MudText.Class), "mud-input-label mb-1");
+        builder.AddAttribute(seq++, nameof(MudText.ChildContent), (RenderFragment)(content =>
+        {
+            content.AddContent(0, label);
+        }));
+        builder.CloseComponent();
+
+        builder.OpenComponent(seq++, typeof(MudSlider<int>));
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.Min), attribute.Minimum);
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.Max), attribute.Maximum);
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.Value), Convert.ToInt32(ReadValue(property) ?? attribute.Minimum, CultureInfo.InvariantCulture));
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.ValueChanged), EventCallback.Factory.Create<int>(this, value => OnValueChangedAsync(property, value)));
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.Immediate), true);
+        AppendColorAttribute(builder, ref seq, nameof(MudSlider<int>.Color));
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.Class), ResolveInputClass(property));
+        builder.CloseComponent();
+    }
+
+    private void RenderNumericField<TValue>(RenderTreeBuilder builder, PropertyInfo property, object? min = null, object? max = null)
     {
         var seq = 0;
         builder.OpenComponent(seq++, typeof(MudNumericField<TValue>));
@@ -447,6 +604,18 @@
         builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Value), ConvertToFieldValue<TValue>(ReadValue(property)));
         builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.ValueChanged), EventCallback.Factory.Create<TValue>(this, value => OnValueChangedAsync(property, value)));
         builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Immediate), true);
+
+        if (min is not null)
+        {
+            builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Min), ConvertToFieldValue<TValue>(min));
+        }
+
+        if (max is not null)
+        {
+            builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Max), ConvertToFieldValue<TValue>(max));
+        }
+
+        AppendVariantAttribute(builder, ref seq, nameof(MudNumericField<TValue>.Variant));
         builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Class), ResolveInputClass(property));
         builder.CloseComponent();
     }
@@ -458,6 +627,8 @@
         builder.AddAttribute(seq++, nameof(MudDatePicker.Label), GetDisplayName(property));
         builder.AddAttribute(seq++, nameof(MudDatePicker.Date), ReadValue(property) as DateTime?);
         builder.AddAttribute(seq++, nameof(MudDatePicker.DateChanged), EventCallback.Factory.Create<DateTime?>(this, value => OnValueChangedAsync(property, value)));
+        AppendColorAttribute(builder, ref seq, nameof(MudDatePicker.Color));
+        AppendVariantAttribute(builder, ref seq, nameof(MudDatePicker.Variant));
         builder.AddAttribute(seq++, nameof(MudDatePicker.Class), ResolveInputClass(property));
         builder.CloseComponent();
     }
@@ -561,6 +732,23 @@
             : string.Join(' ', baseClasses, WrapperClass);
     }
 
+    private void AppendColorAttribute(RenderTreeBuilder builder, ref int seq, string attributeName, Color? fallback = null)
+    {
+        var color = InputColor ?? fallback;
+        if (color is { } resolvedColor)
+        {
+            builder.AddAttribute(seq++, attributeName, resolvedColor);
+        }
+    }
+
+    private void AppendVariantAttribute(RenderTreeBuilder builder, ref int seq, string attributeName)
+    {
+        if (InputVariant is { } variant)
+        {
+            builder.AddAttribute(seq++, attributeName, variant);
+        }
+    }
+
     private string? ResolveInputClass(PropertyInfo property)
     {
         List<string>? classes = null;
@@ -654,5 +842,36 @@
         }
 
         return property.Name;
+    }
+
+    private static string? GetGroupHeading(PropertyInfo property)
+    {
+        var heading = property.GetCustomAttribute<DynamicInputHeadingAttribute>()?.Heading;
+        return string.IsNullOrWhiteSpace(heading) ? null : heading;
+    }
+
+    private DynamicInputBooleanDisplay ResolveBooleanDisplayMode(PropertyInfo property)
+    {
+        var attribute = property.GetCustomAttribute<DynamicInputBooleanAttribute>();
+        return attribute?.DisplayAs ?? BooleanDisplay;
+    }
+
+    private bool? ReadNullableBoolean(PropertyInfo property)
+    {
+        var value = ReadValue(property);
+        return value is null ? null : Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+    }
+
+    private sealed class PropertyRenderGroup
+    {
+        public PropertyRenderGroup(string? heading)
+        {
+            Heading = heading;
+            Properties = new List<PropertyInfo>();
+        }
+
+        public string? Heading { get; }
+
+        public List<PropertyInfo> Properties { get; }
     }
 }

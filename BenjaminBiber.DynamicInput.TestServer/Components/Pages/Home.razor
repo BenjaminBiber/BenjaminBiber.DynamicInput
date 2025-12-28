@@ -33,7 +33,10 @@
                 <DynamicObjectEditor Model="_deferredPerson"
                                       ModelChanged="OnModelChangedAsync"
                                       RequireSubmit="true"
-                                      SubmitButtonText="Änderungen anwenden" />
+                                      InputColor="Color.Secondary"
+                                      InputVariant="Variant.Outlined"
+                                      SubmitButtonText="Änderungen anwenden"
+                                      BooleanDisplay="DynamicInputBooleanDisplay.Checkbox" />
                 <MudText Typo="Typo.subtitle2" Class="mt-4">Live-Daten</MudText>
                 <pre class="mud-code-block">@_deferredJson</pre>
             </MudPaper>
@@ -51,6 +54,7 @@
         OpenTasks = 3,
         Birthday = new DateTime(1992, 11, 5),
         IsActive = true,
+        ReceivesNewsletter = true,
         Status = "active"
     };
 
@@ -63,6 +67,7 @@
         OpenTasks = 2,
         Birthday = new DateTime(1996, 4, 17),
         IsActive = false,
+        ReceivesNewsletter = false,
     };
 
     private static readonly JsonSerializerOptions JsonOptions = new()

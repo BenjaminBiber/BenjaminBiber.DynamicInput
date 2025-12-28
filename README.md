@@ -23,22 +23,25 @@ Dotnet add package BenjaminBiber.DynamicInput
                       RequireSubmit="true"
                       SubmitButtonText="Änderungen anwenden"
                       WrapperClass="pa-4"
-                      InputClass="w-100" />
+                      InputClass="w-100"
+                      BooleanDisplay="DynamicInputBooleanDisplay.Checkbox"
+                      SubmitButtonClass="mt-4" />
 ```
 
 ### Parameter
 
-`Model` | Objekt, das reflektiert wird (Pflicht). Änderungen werden direkt auf dem Instanzobjekt vorgenommen.
-
-`ModelChanged` | Wird aufgerufen, wenn Werte direkt geschrieben oder nach Submit übernommen wurden.
-
-`RequireSubmit` | Steuert, ob Eingaben sofort geschrieben (`false`) oder in `_pendingValues` gehalten und per Button übernommen werden (`true`).
-
-`SubmitButtonText` | Beschriftung des Buttons im Submit-Modus.
-
-`WrapperClass` | Zusätzliche CSS-Klassen für das umschließende `<div class="dynamic-object-editor pa-4">`.
-
-`InputClass` | Globale CSS-Klassen, die auf jedes erzeugte Mud-Input angewendet werden (lassen sich pro Property ergänzen, siehe unten).
+| Parameter | Beschreibung |
+|---|---|
+| `Model` | Objekt, das reflektiert wird (Pflicht). Änderungen werden direkt auf dem Instanzobjekt vorgenommen. |
+| `ModelChanged` | Wird aufgerufen, wenn Werte sofort geschrieben oder nach Submit übernommen wurden. |
+| `RequireSubmit` | `true` hält Werte zunächst in `_pendingValues` und übernimmt sie erst über den Button, `false` schreibt sofort ins Modell. |
+| `SubmitButtonText` | Beschriftung des Buttons im Submit-Modus (Standard: „Änderungen übernehmen“). |
+| `WrapperClass` | Zusätzliche CSS-Klassen für das umschließende `<div class="dynamic-object-editor pa-4">`. |
+| `InputClass` | Globale CSS-Klassen, die auf jedes erzeugte Mud-Input angewendet werden (lassen sich pro Property ergänzen, siehe unten). |
+| `InputColor` | Optionaler `MudBlazor.Color`, der auf Inputs mit `Color`-Parameter angewendet wird (z. B. Switch, Checkbox, Slider, DatePicker). |
+| `InputVariant` | Optionaler `MudBlazor.Variant`, der auf Inputs mit `Variant`-Parameter angewendet wird (z. B. Text-/NumericFields, Selects, DatePicker). |
+| `BooleanDisplay` | Standard-Darstellung für boolsche Werte: `Switch` (Default) oder `Checkbox`. Einzelne Properties können dies via `[DynamicInputBoolean]` überschreiben. |
+| `SubmitButtonClass` | Ermöglicht es, zusätzliche Klassen auf den Submit-Button zu legen (z. B. Breite, Ausrichtung). |
 
 ## Property-Attribute
 
@@ -47,6 +50,13 @@ Dotnet add package BenjaminBiber.DynamicInput
 `[DynamicInputIgnore]` | Property wird komplett ausgeblendet (z. B. IDs, Computed Values).
 `[DynamicInputClass("w-100", "max-width-300")]` | Ergänzt pro Property zusätzliche CSS-Klassen zum Input. Mehrere Attribute oder mehrere Klassen pro Attribut möglich.
 `[DynamicInputOptions(nameof(GetStatusOptionsAsync))]` | Markiert ein Feld als Select. Die angegebene parameterlose Instanzmethode liefert die Optionen.
+`[DynamicInputHeading("Beschäftigung")]` | Rendert eine MudText-Überschrift vor dem Property und gruppiert direkt folgende Properties mit derselben Überschrift unter diesem Block.
+`[DynamicInputBoolean(DynamicInputBooleanDisplay.Checkbox)]` | Erzwingt für ein boolsches Feld eine Checkbox (oder Switch) – unabhängig vom globalen `BooleanDisplay`-Parameter.
+`[DynamicInputInteger(0, 100, displayAsSlider: true)]` | Definiert Mindest- und Höchstwert für `int`/`int?` und kann zusätzlich eine Slider-Darstellung erzwingen (Slider nur für nicht-nullable `int`).
+
+> Tipp: Platziere Eigenschaften, die dieselbe Überschrift erhalten sollen, unmittelbar hintereinander – so entsteht ein sauberer Abschnitt ohne doppelte Headings.
+
+> Hinweis: `BooleanDisplay="DynamicInputBooleanDisplay.Checkbox"` macht Checkboxen zur Voreinstellung – einzelne Felder kannst du mit `[DynamicInputBoolean(DynamicInputBooleanDisplay.Switch)]` weiter als Switch darstellen.
 
 ### Options-Provider
 
@@ -77,8 +87,8 @@ public class SamplePerson
 `DynamicObjectEditor` erkennt aktuell folgende Typen und rendert passende MudBlazor-Komponenten:
 
 - `string`, `Guid` → `MudTextField`
-- `bool` → `MudSwitch`
-- Zahlen (alle gängigen `int`, `long`, `decimal`, `float`, `double` inkl. Nullable) → `MudNumericField`
+- `bool` → `MudSwitch` oder `MudCheckBox` (steuerbar via `BooleanDisplay` bzw. `[DynamicInputBoolean]`)
+- Zahlen (alle gängigen `int`, `long`, `decimal`, `float`, `double` inkl. Nullable) → `MudNumericField`; für `int`/`int?` lassen sich Min/Max + Slider über `[DynamicInputInteger]` festlegen
 - `DateTime` → `MudDatePicker`
 - Properties mit `[DynamicInputOptions]` → `MudSelect`
 

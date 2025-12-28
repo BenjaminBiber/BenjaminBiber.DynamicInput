@@ -54,6 +54,9 @@
     private readonly Dictionary<string, object?> _pendingValues = new(StringComparer.Ordinal);
     private readonly List<PropertyInfo> _editableProperties = new();
     private readonly Dictionary<string, IReadOnlyList<DynamicInputOption>> _optionsCache = new(StringComparer.Ordinal);
+    private static readonly MethodInfo _createValueChangedCallbackCoreMethod =
+        typeof(DynamicObjectEditor).GetMethod(nameof(CreateValueChangedCallbackCore), BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("CreateValueChangedCallbackCore could not be resolved.");
 
     private object? _currentModelRef;
     private bool _deferApply;
@@ -288,10 +291,11 @@
         }
 
         var selectType = typeof(MudSelect<>).MakeGenericType(property.PropertyType);
+        var valueChangedCallback = CreateSelectValueChangedCallback(property);
         builder.OpenComponent(seq++, selectType);
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Label), GetDisplayName(property));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Value), ReadValue(property));
-        builder.AddAttribute(seq++, nameof(MudSelect<object>.ValueChanged), EventCallback.Factory.Create(this, (Func<object?, Task>)(value => OnValueChangedAsync(property, value))));
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.ValueChanged), valueChangedCallback);
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Class), ResolveInputClass(property));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.ChildContent), (RenderFragment)(childBuilder =>
         {
@@ -309,6 +313,17 @@
             }
         }));
         builder.CloseComponent();
+    }
+
+    private object CreateSelectValueChangedCallback(PropertyInfo property)
+    {
+        var generic = _createValueChangedCallbackCoreMethod.MakeGenericMethod(property.PropertyType);
+        return generic.Invoke(this, new object[] { property })!;
+    }
+
+    private EventCallback<TValue> CreateValueChangedCallbackCore<TValue>(PropertyInfo property)
+    {
+        return EventCallback.Factory.Create<TValue>(this, value => OnValueChangedAsync(property, value));
     }
 
     private void RenderTextField(RenderTreeBuilder builder, PropertyInfo property)

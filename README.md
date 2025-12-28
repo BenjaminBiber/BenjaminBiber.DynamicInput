@@ -53,6 +53,7 @@ Dotnet add package BenjaminBiber.DynamicInput
 `[DynamicInputHeading("Beschäftigung")]` | Rendert eine MudText-Überschrift vor dem Property und gruppiert direkt folgende Properties mit derselben Überschrift unter diesem Block.
 `[DynamicInputBoolean(DynamicInputBooleanDisplay.Checkbox)]` | Erzwingt für ein boolsches Feld eine Checkbox (oder Switch) – unabhängig vom globalen `BooleanDisplay`-Parameter.
 `[DynamicInputInteger(0, 100, displayAsSlider: true)]` | Definiert Mindest- und Höchstwert für `int`/`int?` und kann zusätzlich eine Slider-Darstellung erzwingen (Slider nur für nicht-nullable `int`).
+`[DynamicInputDisabled(nameof(IsNameLocked))]` | Ruft eine parameterlose Instanzmethode auf, die `bool` zurückgibt; `true` deaktiviert das jeweilige Input (z. B. für ReadOnly- oder Feature-Flags).
 
 > Tipp: Platziere Eigenschaften, die dieselbe Überschrift erhalten sollen, unmittelbar hintereinander – so entsteht ein sauberer Abschnitt ohne doppelte Headings.
 

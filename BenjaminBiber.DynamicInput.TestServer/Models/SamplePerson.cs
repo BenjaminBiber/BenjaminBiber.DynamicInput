@@ -36,6 +36,7 @@ public class SamplePerson
     [Display(Name = "Monatsgehalt"), DataType(DataType.Currency)]
     [DynamicInputClass("w-100", "max-width-300")]
     [DynamicInputHeading("Beschäftigung")]
+    [DynamicInputDisabled(nameof(IsSalaryLocked))]
     public decimal Salary { get; set; }
 
     [Display(Name = "Status")]
@@ -56,5 +57,10 @@ public class SamplePerson
         };
 
         return Task.FromResult(options);
+    }
+
+    private bool IsSalaryLocked()
+    {
+        return string.Equals(Status, "archived", StringComparison.OrdinalIgnoreCase);
     }
 }

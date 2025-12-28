@@ -36,7 +36,11 @@
 
         @if (_deferApply)
         {
-            <MudButton Class="@SubmitButtonClass" Variant="Variant.Filled" Color="Color.Primary" Disabled="!_isDirty" OnClick="SubmitChanges">
+            <MudButton Class="@SubmitButtonClass"
+                       Variant="@(InputVariant ?? Variant.Filled)"
+                       Color="@(InputColor ?? Color.Primary)"
+                       Disabled="!_isDirty"
+                       OnClick="SubmitChanges">
                 @SubmitButtonText
             </MudButton>
         }
@@ -67,6 +71,7 @@
     private readonly List<PropertyInfo> _editableProperties = new();
     private readonly List<PropertyRenderGroup> _propertyGroups = new();
     private readonly Dictionary<string, IReadOnlyList<DynamicInputOption>> _optionsCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MethodInfo> _disabledPredicates = new(StringComparer.Ordinal);
     private static readonly MethodInfo _createValueChangedCallbackCoreMethod =
         typeof(DynamicObjectEditor).GetMethod(nameof(CreateValueChangedCallbackCore), BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("CreateValueChangedCallbackCore could not be resolved.");
@@ -146,6 +151,7 @@
     {
         _editableProperties.Clear();
         _propertyGroups.Clear();
+        _disabledPredicates.Clear();
         if (Model is null)
         {
             return;
@@ -160,6 +166,7 @@
         );
 
         BuildPropertyGroups();
+        BuildDisabledPredicates();
     }
 
     private void BuildPropertyGroups()
@@ -184,6 +191,49 @@
             currentGroup.Properties.Add(property);
             _propertyGroups.Add(currentGroup);
         }
+    }
+
+    private void BuildDisabledPredicates()
+    {
+        if (Model is null)
+        {
+            return;
+        }
+
+        var modelType = Model.GetType();
+        foreach (var property in _editableProperties)
+        {
+            var attribute = property.GetCustomAttribute<DynamicInputDisabledAttribute>();
+            if (attribute is null)
+            {
+                continue;
+            }
+
+            var method = ResolveDisabledPredicateMethod(modelType, attribute, property);
+            _disabledPredicates[property.Name] = method;
+        }
+    }
+
+    private static MethodInfo ResolveDisabledPredicateMethod(Type modelType, DynamicInputDisabledAttribute attribute, PropertyInfo property)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var method = modelType.GetMethod(attribute.PredicateMethodName, flags);
+        if (method is null)
+        {
+            throw new InvalidOperationException($"Die Methode '{attribute.PredicateMethodName}' wurde für {property.Name} nicht gefunden.");
+        }
+
+        if (method.GetParameters().Length > 0)
+        {
+            throw new InvalidOperationException($"Die Methode '{attribute.PredicateMethodName}' für {property.Name} darf keine Parameter besitzen.");
+        }
+
+        if (method.ReturnType != typeof(bool))
+        {
+            throw new InvalidOperationException($"Die Methode '{attribute.PredicateMethodName}' für {property.Name} muss einen bool zurückgeben.");
+        }
+
+        return method;
     }
 
     private async Task LoadSelectableOptionsAsync(bool modelChanged)
@@ -332,11 +382,13 @@
 
         var selectType = typeof(MudSelect<>).MakeGenericType(property.PropertyType);
         var valueChangedCallback = CreateSelectValueChangedCallback(property);
+        var isDisabled = IsPropertyDisabled(property);
         builder.OpenComponent(seq++, selectType);
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Label), GetDisplayName(property));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Value), ReadValue(property));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.ValueChanged), valueChangedCallback);
         builder.AddAttribute(seq++, nameof(MudSelect<object>.Class), ResolveInputClass(property));
+        builder.AddAttribute(seq++, nameof(MudSelect<object>.Disabled), isDisabled);
         AppendVariantAttribute(builder, ref seq, nameof(MudSelect<object>.Variant));
         builder.AddAttribute(seq++, nameof(MudSelect<object>.ChildContent), (RenderFragment)(childBuilder =>
         {
@@ -370,12 +422,14 @@
     private void RenderTextField(RenderTreeBuilder builder, PropertyInfo property)
     {
         var seq = 0;
+        var isDisabled = IsPropertyDisabled(property);
         builder.OpenComponent(seq++, typeof(MudTextField<string>));
         builder.AddAttribute(seq++, nameof(MudTextField<string>.Label), GetDisplayName(property));
         builder.AddAttribute(seq++, nameof(MudTextField<string>.Value), Convert.ToString(ReadValue(property), CultureInfo.CurrentCulture));
         builder.AddAttribute(seq++, nameof(MudTextField<string>.ValueChanged), EventCallback.Factory.Create<string?>(this, value => OnValueChangedAsync(property, value)));
         builder.AddAttribute(seq++, nameof(MudTextField<string>.Immediate), true);
         builder.AddAttribute(seq++, nameof(MudTextField<string>.Class), ResolveInputClass(property));
+        builder.AddAttribute(seq++, nameof(MudTextField<string>.Disabled), isDisabled);
         AppendVariantAttribute(builder, ref seq, nameof(MudTextField<string>.Variant));
         builder.CloseComponent();
     }
@@ -383,16 +437,17 @@
     private void RenderBooleanField(RenderTreeBuilder builder, PropertyInfo property)
     {
         var display = ResolveBooleanDisplayMode(property);
+        var isDisabled = IsPropertyDisabled(property);
         if (display == DynamicInputBooleanDisplay.Checkbox)
         {
-            RenderCheckboxField(builder, property);
+            RenderCheckboxField(builder, property, isDisabled);
             return;
         }
 
-        RenderSwitchField(builder, property);
+        RenderSwitchField(builder, property, isDisabled);
     }
 
-    private void RenderSwitchField(RenderTreeBuilder builder, PropertyInfo property)
+    private void RenderSwitchField(RenderTreeBuilder builder, PropertyInfo property, bool isDisabled)
     {
         var seq = 0;
         var isNullable = property.PropertyType == typeof(bool?);
@@ -415,10 +470,11 @@
             : nameof(MudSwitch<bool>.Color);
         AppendColorAttribute(builder, ref seq, colorAttributeName, Color.Primary);
         builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Class), ResolveInputClass(property));
+        builder.AddAttribute(seq++, nameof(MudSwitch<bool>.Disabled), isDisabled);
         builder.CloseComponent();
     }
 
-    private void RenderCheckboxField(RenderTreeBuilder builder, PropertyInfo property)
+    private void RenderCheckboxField(RenderTreeBuilder builder, PropertyInfo property, bool isDisabled)
     {
         var seq = 0;
         var isNullable = property.PropertyType == typeof(bool?);
@@ -443,91 +499,93 @@
             : nameof(MudCheckBox<bool>.Color);
         AppendColorAttribute(builder, ref seq, checkboxColorAttribute);
 
+        builder.AddAttribute(seq++, nameof(MudCheckBox<bool>.Disabled), isDisabled);
         builder.CloseComponent();
     }
 
     private void RenderNumericField(RenderTreeBuilder builder, PropertyInfo property)
     {
         var propertyType = property.PropertyType;
+        var isDisabled = IsPropertyDisabled(property);
         if (propertyType == typeof(int))
         {
-            RenderIntegerField(builder, property, isNullable: false);
+            RenderIntegerField(builder, property, isNullable: false, isDisabled);
         }
         else if (propertyType == typeof(int?))
         {
-            RenderIntegerField(builder, property, isNullable: true);
+            RenderIntegerField(builder, property, isNullable: true, isDisabled);
         }
         else if (propertyType == typeof(long))
         {
-            RenderNumericField<long>(builder, property);
+            RenderNumericField<long>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(long?))
         {
-            RenderNumericField<long?>(builder, property);
+            RenderNumericField<long?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(decimal))
         {
-            RenderNumericField<decimal>(builder, property);
+            RenderNumericField<decimal>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(decimal?))
         {
-            RenderNumericField<decimal?>(builder, property);
+            RenderNumericField<decimal?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(double))
         {
-            RenderNumericField<double>(builder, property);
+            RenderNumericField<double>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(double?))
         {
-            RenderNumericField<double?>(builder, property);
+            RenderNumericField<double?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(float))
         {
-            RenderNumericField<float>(builder, property);
+            RenderNumericField<float>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(float?))
         {
-            RenderNumericField<float?>(builder, property);
+            RenderNumericField<float?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(short))
         {
-            RenderNumericField<short>(builder, property);
+            RenderNumericField<short>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(short?))
         {
-            RenderNumericField<short?>(builder, property);
+            RenderNumericField<short?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(byte))
         {
-            RenderNumericField<byte>(builder, property);
+            RenderNumericField<byte>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(byte?))
         {
-            RenderNumericField<byte?>(builder, property);
+            RenderNumericField<byte?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(uint))
         {
-            RenderNumericField<uint>(builder, property);
+            RenderNumericField<uint>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(uint?))
         {
-            RenderNumericField<uint?>(builder, property);
+            RenderNumericField<uint?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(ulong))
         {
-            RenderNumericField<ulong>(builder, property);
+            RenderNumericField<ulong>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(ulong?))
         {
-            RenderNumericField<ulong?>(builder, property);
+            RenderNumericField<ulong?>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(ushort))
         {
-            RenderNumericField<ushort>(builder, property);
+            RenderNumericField<ushort>(builder, property, isDisabled);
         }
         else if (propertyType == typeof(ushort?))
         {
-            RenderNumericField<ushort?>(builder, property);
+            RenderNumericField<ushort?>(builder, property, isDisabled);
         }
         else
         {
@@ -535,18 +593,18 @@
         }
     }
 
-    private void RenderIntegerField(RenderTreeBuilder builder, PropertyInfo property, bool isNullable)
+    private void RenderIntegerField(RenderTreeBuilder builder, PropertyInfo property, bool isNullable, bool isDisabled)
     {
         var attribute = property.GetCustomAttribute<DynamicInputIntegerAttribute>();
         if (attribute is null)
         {
             if (isNullable)
             {
-                RenderNumericField<int?>(builder, property);
+                RenderNumericField<int?>(builder, property, isDisabled);
             }
             else
             {
-                RenderNumericField<int>(builder, property);
+                RenderNumericField<int>(builder, property, isDisabled);
             }
 
             return;
@@ -559,21 +617,21 @@
 
         if (attribute.DisplayAsSlider)
         {
-            RenderIntegerSlider(builder, property, attribute);
+            RenderIntegerSlider(builder, property, attribute, isDisabled);
             return;
         }
 
         if (isNullable)
         {
-            RenderNumericField<int?>(builder, property, attribute.Minimum, attribute.Maximum);
+            RenderNumericField<int?>(builder, property, isDisabled, attribute.Minimum, attribute.Maximum);
         }
         else
         {
-            RenderNumericField<int>(builder, property, attribute.Minimum, attribute.Maximum);
+            RenderNumericField<int>(builder, property, isDisabled, attribute.Minimum, attribute.Maximum);
         }
     }
 
-    private void RenderIntegerSlider(RenderTreeBuilder builder, PropertyInfo property, DynamicInputIntegerAttribute attribute)
+    private void RenderIntegerSlider(RenderTreeBuilder builder, PropertyInfo property, DynamicInputIntegerAttribute attribute, bool isDisabled)
     {
         var label = GetDisplayName(property);
         var seq = 0;
@@ -592,11 +650,12 @@
         builder.AddAttribute(seq++, nameof(MudSlider<int>.ValueChanged), EventCallback.Factory.Create<int>(this, value => OnValueChangedAsync(property, value)));
         builder.AddAttribute(seq++, nameof(MudSlider<int>.Immediate), true);
         AppendColorAttribute(builder, ref seq, nameof(MudSlider<int>.Color));
+        builder.AddAttribute(seq++, nameof(MudSlider<int>.Disabled), isDisabled);
         builder.AddAttribute(seq++, nameof(MudSlider<int>.Class), ResolveInputClass(property));
         builder.CloseComponent();
     }
 
-    private void RenderNumericField<TValue>(RenderTreeBuilder builder, PropertyInfo property, object? min = null, object? max = null)
+    private void RenderNumericField<TValue>(RenderTreeBuilder builder, PropertyInfo property, bool isDisabled, object? min = null, object? max = null)
     {
         var seq = 0;
         builder.OpenComponent(seq++, typeof(MudNumericField<TValue>));
@@ -615,6 +674,7 @@
             builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Max), ConvertToFieldValue<TValue>(max));
         }
 
+        builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Disabled), isDisabled);
         AppendVariantAttribute(builder, ref seq, nameof(MudNumericField<TValue>.Variant));
         builder.AddAttribute(seq++, nameof(MudNumericField<TValue>.Class), ResolveInputClass(property));
         builder.CloseComponent();
@@ -623,10 +683,12 @@
     private void RenderDatePicker(RenderTreeBuilder builder, PropertyInfo property)
     {
         var seq = 0;
+        var isDisabled = IsPropertyDisabled(property);
         builder.OpenComponent(seq++, typeof(MudDatePicker));
         builder.AddAttribute(seq++, nameof(MudDatePicker.Label), GetDisplayName(property));
         builder.AddAttribute(seq++, nameof(MudDatePicker.Date), ReadValue(property) as DateTime?);
         builder.AddAttribute(seq++, nameof(MudDatePicker.DateChanged), EventCallback.Factory.Create<DateTime?>(this, value => OnValueChangedAsync(property, value)));
+        builder.AddAttribute(seq++, nameof(MudDatePicker.Disabled), isDisabled);
         AppendColorAttribute(builder, ref seq, nameof(MudDatePicker.Color));
         AppendVariantAttribute(builder, ref seq, nameof(MudDatePicker.Variant));
         builder.AddAttribute(seq++, nameof(MudDatePicker.Class), ResolveInputClass(property));
@@ -730,6 +792,21 @@
         return string.IsNullOrWhiteSpace(WrapperClass)
             ? baseClasses
             : string.Join(' ', baseClasses, WrapperClass);
+    }
+
+    private bool IsPropertyDisabled(PropertyInfo property)
+    {
+        if (Model is null)
+        {
+            return true;
+        }
+
+        if (!_disabledPredicates.TryGetValue(property.Name, out var method))
+        {
+            return false;
+        }
+
+        return (bool)method.Invoke(Model, null)!;
     }
 
     private void AppendColorAttribute(RenderTreeBuilder builder, ref int seq, string attributeName, Color? fallback = null)

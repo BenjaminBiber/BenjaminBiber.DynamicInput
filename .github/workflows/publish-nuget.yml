@@ -2,6 +2,8 @@ name: Publish NuGet Package
 
 on:
   push:
+    branches:
+      - master
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -22,38 +24,60 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Determine package version
+        id: version
+        shell: bash
+        env:
+          COMMIT_MESSAGE: "${{ github.event.head_commit.message || '' }}"
+          INPUT_VERSION: "${{ github.event.inputs.package_version || '' }}"
+        run: |
+          VERSION=""
+          SHOULD_PUBLISH=false
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+            if [ -n "$VERSION" ]; then
+              SHOULD_PUBLISH=true
+            fi
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            SHOULD_PUBLISH=true
+          else
+            if [[ "$COMMIT_MESSAGE" =~ v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+              VERSION="${BASH_REMATCH[1]}"
+              SHOULD_PUBLISH=true
+            fi
+          fi
+
+          if [ "$SHOULD_PUBLISH" = false ]; then
+            echo "No release version (vX.Y.Z) marker found; skipping publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_publish=true" >> "$GITHUB_OUTPUT"
+
       - name: Setup .NET
+        if: steps.version.outputs.should_publish == 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
 
       - name: Restore dependencies
+        if: steps.version.outputs.should_publish == 'true'
         run: dotnet restore
 
-      - name: Determine package version
-        id: version
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.package_version }}"
-          else
-            VERSION="${GITHUB_REF_NAME#v}"
-          fi
-
-          if [ -z "$VERSION" ]; then
-            echo "Package version could not be determined." >&2
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Build
+        if: steps.version.outputs.should_publish == 'true'
         run: dotnet build --configuration Release --no-restore
 
       - name: Pack
+        if: steps.version.outputs.should_publish == 'true'
         run: dotnet pack $PROJECT_PATH --configuration Release --no-build --output $ARTIFACT_DIR /p:PackageVersion=${{ steps.version.outputs.version }}
 
       - name: Publish to NuGet
+        if: steps.version.outputs.should_publish == 'true'
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |

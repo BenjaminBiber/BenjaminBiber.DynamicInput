@@ -27,12 +27,17 @@ Dotnet add package BenjaminBiber.DynamicInput
 ```
 
 ### Parameter
--|-
+
 `Model` | Objekt, das reflektiert wird (Pflicht). Änderungen werden direkt auf dem Instanzobjekt vorgenommen.
+
 `ModelChanged` | Wird aufgerufen, wenn Werte direkt geschrieben oder nach Submit übernommen wurden.
+
 `RequireSubmit` | Steuert, ob Eingaben sofort geschrieben (`false`) oder in `_pendingValues` gehalten und per Button übernommen werden (`true`).
+
 `SubmitButtonText` | Beschriftung des Buttons im Submit-Modus.
+
 `WrapperClass` | Zusätzliche CSS-Klassen für das umschließende `<div class="dynamic-object-editor pa-4">`.
+
 `InputClass` | Globale CSS-Klassen, die auf jedes erzeugte Mud-Input angewendet werden (lassen sich pro Property ergänzen, siehe unten).
 
 ## Property-Attribute
